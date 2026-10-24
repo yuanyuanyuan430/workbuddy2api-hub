@@ -69,6 +69,26 @@ class ChecksumTests(unittest.TestCase):
         self.assertEqual(sha_url, "https://github.com/o/r/releases/download/v2.0.0/SHA256SUMS")
 
 
+class UpdateSourceTests(unittest.TestCase):
+    """便携版一键更新与更新检查必须指向同一个仓库。
+
+    两处默认值分散在 wb_updates / wb_update_portable，任一处漏改都会让面板
+    「检查到的是本仓库、装进来的是上游包」这种最难排查的组合出现。
+    """
+
+    def test_the_portable_updater_pulls_from_the_maintained_repository(self):
+        self.assertEqual(U.REPO_DEFAULT, "yuanyuanyuan430/workbuddy2api-hub")
+
+    def test_the_portable_updater_agrees_with_the_checker(self):
+        import wb_updates
+        self.assertEqual(U.REPO_DEFAULT, wb_updates.DEFAULT_REPOSITORY)
+
+    def test_asset_urls_pull_from_that_repository(self):
+        zip_url, sha_url, name = U.asset_urls(U.REPO_DEFAULT, "v9.9.9", "9.9.9")
+        base = "https://github.com/%s/releases/download/v9.9.9" % U.REPO_DEFAULT
+        self.assertEqual(zip_url, base + "/" + name)
+        self.assertEqual(sha_url, base + "/SHA256SUMS")
+
 class ExtractTests(unittest.TestCase):
     def test_safe_extract_keeps_manifest_and_root_only(self):
         with tempfile.TemporaryDirectory() as d:

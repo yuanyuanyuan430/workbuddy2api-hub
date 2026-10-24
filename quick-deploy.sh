@@ -3,7 +3,7 @@
 # WorkBuddy2API-Hub 一键安装与快速更新脚本
 # 支持系统: Linux, macOS, NAS (fnOS / 群晖 / 威联通 / Unraid 等)
 # 用法:
-#   首次部署: curl -fsSL https://raw.githubusercontent.com/ardeyouxipianyi/workbuddy2api-hub/main/quick-deploy.sh | bash
+#   首次部署: curl -fsSL https://raw.githubusercontent.com/yuanyuanyuan430/workbuddy2api-hub/main/quick-deploy.sh | bash
 #   快速更新: 再次运行相同的命令即可完成平滑无感升级（账号配置绝不丢失）
 #   部署模式: WB_DEPLOY_MODE=local|lan|public（默认 lan）
 #             local/public 只把 8788 绑到 127.0.0.1，公网机请再套 Nginx/Caddy/Tunnel
@@ -84,7 +84,7 @@ else
     cat > docker-compose.yml << EOF
 services:
   wb-proxy:
-    image: ghcr.io/ardeyouxipianyi/workbuddy2api-hub:latest
+    image: ghcr.io/yuanyuanyuan430/workbuddy2api-hub:latest
     container_name: wb-proxy
     restart: unless-stopped
     ports:
