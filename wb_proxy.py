@@ -15,6 +15,7 @@ Launchers: start-wb-proxy.bat / start-wb-proxy-lan.bat on Windows,
 start-wb-proxy.command (or ./start-wb-proxy.sh) on macOS/Linux.
 """
 import argparse
+import atexit
 import base64
 import bisect
 import calendar
@@ -264,6 +265,11 @@ def install_console_close_handler():
             if event in (CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT):
                 try:
                     sys.stdout.flush()
+                except Exception:
+                    pass
+                # 同 _bye：os._exit 跳过 atexit，daemon 写线程必须先收掉。
+                try:
+                    _stop_console_writer(0.5)
                 except Exception:
                     pass
                 os._exit(0)
@@ -10585,38 +10591,85 @@ _CONSOLE_QUEUE = deque()
 _CONSOLE_COND = threading.Condition()
 _CONSOLE_WRITER = None
 _CONSOLE_DROPPED = 0
+_CONSOLE_INFLIGHT = 0
+_CONSOLE_STOP = False
 
 
 def _console_write_now(line):
-    """真正落到控制台的那一下：失败一律吞掉，绝不外抛。"""
+    """真正落到控制台的那一下：失败一律吞掉，绝不外抛。
+
+    有真实 fd 时走 os.write，不碰 sys.stderr 那个 _io.BufferedWriter。原因不是
+    性能：后台写线程一旦在解释器 finalize 阶段还攥着 stderr 缓冲对象的锁，
+    CPython 会直接 `Fatal Python error: _enter_buffered_busy` 中止进程（实测写完
+    5 行日志立刻退出，6/6 次 SIGABRT，退出码 -6）。os.write 只经内核，不参与那把
+    锁，退出干净。非 fd 的流（测试注入的 StringIO）没有这条路径，仍照常 write。
+
+    行可能长于管道原子写上限（PIPE_BUF），所以按返回值推进，短写就继续。
+
+    唯一的例外是 Windows 的**交互式控制台**：那是一条 WriteConsoleW 通道，绕过
+    TextIOWrapper 直接写字节会按当前代码页解释，中文日志变成问号。但控制台是有人
+    在看的，写不会无限期不返回，持锁风险也就没有；这条分支继续用 stream.write。
+    重定向到管道/文件的 Windows 进程仍走 os.write（那才是会堵死的情形）。
+    """
     try:
         stream = sys.stderr
         if stream is None:
             return
-        stream.write(line)
-        stream.flush()
+        try:
+            raw_ok = not (os.name == "nt" and stream.isatty())
+            fd = stream.fileno() if raw_ok else None
+        except Exception:
+            fd = None
+        if fd is None:
+            stream.write(line)
+            stream.flush()
+            return
+        view = memoryview(line.encode("utf-8", "replace"))
+        while view:
+            try:
+                written = os.write(fd, view)
+            except InterruptedError:
+                continue
+            if written <= 0:
+                return
+            view = view[written:]
     except Exception:
         pass
 
 
 def _console_drain():
     """后台唯一的控制台写者：被读端卡住时只是它自己卡住。"""
-    global _CONSOLE_DROPPED
+    global _CONSOLE_DROPPED, _CONSOLE_INFLIGHT
     while True:
         with _CONSOLE_COND:
             # 丢弃计数本身也是待写内容：队列排空之后如果还有没报的丢弃，要立刻补
             # 一条说明再睡。事故末尾那一批丢行往往再没有后续日志把写者叫醒，只等
             # “下一行到来时再报” 会让计数永远埋着不报。
-            while not _CONSOLE_QUEUE and not _CONSOLE_DROPPED:
+            while not _CONSOLE_QUEUE and not _CONSOLE_DROPPED and not _CONSOLE_STOP:
                 _CONSOLE_COND.wait()
+            if _CONSOLE_STOP and not _CONSOLE_QUEUE:
+                # 停写：把还没报的丢弃计数补完就退出，剩下的行由 _console_flush
+                # 之后的进程收尾放弃（控制台本来就已经不可用了）。
+                if not _CONSOLE_DROPPED:
+                    _CONSOLE_COND.notify_all()
+                    return
             if _CONSOLE_DROPPED:
                 lost, _CONSOLE_DROPPED = _CONSOLE_DROPPED, 0
                 _CONSOLE_QUEUE.appendleft(
                     "[wb-proxy] console log: 读端跟不上，丢弃了 %d 行（看板日志照常完整）\n"
                     % lost)
             line = _CONSOLE_QUEUE.popleft() if _CONSOLE_QUEUE else None
+            if line is not None:
+                # 写之前先登记"有一行正在写"：flush 只认队列空是不够的——写线程可能
+                # 已经把最后一行取走、正卡在内核里，此时退出就会漏掉那一行。
+                _CONSOLE_INFLIGHT += 1
         if line is not None:
-            _console_write_now(line)
+            try:
+                _console_write_now(line)
+            finally:
+                with _CONSOLE_COND:
+                    _CONSOLE_INFLIGHT -= 1
+                    _CONSOLE_COND.notify_all()
 
 
 def _console_enqueue(line):
@@ -10657,13 +10710,44 @@ def _console_log(line):
 
 
 def _console_flush(timeout=1.0):
-    """退出前尽力把队列写完；控制台已死时最多等 timeout 秒。"""
+    """退出前尽力把队列写完；控制台已死时最多等 timeout 秒。
+
+    判据是「队列空 + 没有正在写的那一行」，不是「队列空」：写线程可能已经把最后
+    一行取走、正卡在内核里，只看队列就会漏掉它（退出时丢最后几行日志）。
+    """
     end = time.time() + timeout
     while time.time() < end:
         with _CONSOLE_COND:
-            if not _CONSOLE_QUEUE and not _CONSOLE_DROPPED:
+            if not _CONSOLE_QUEUE and not _CONSOLE_DROPPED and not _CONSOLE_INFLIGHT:
                 return
         time.sleep(0.05)
+
+
+def _stop_console_writer(timeout=1.0):
+    """退出前的收尾：先写完积压，再让写线程自己退出。
+
+    这一步是防 CPython 在 finalize 阶段中止进程：后台写线程是 daemon，若解释器
+    开始收尾时它还攥着 sys.stderr 那个 BufferedWriter 的锁，CPython 直接
+    `Fatal Python error: _enter_buffered_busy` 并 SIGABRT（Windows 上同样）。让
+    线程在收尾前写完并退出，锁就没人持有了。
+
+    POSIX 上写走 os.write 本来就不参与那把锁，这里是双保险；Windows 上写仍走
+    stream.write（控制台编码），这一层是唯一的保险。
+    """
+    global _CONSOLE_STOP
+    _console_flush(timeout)
+    with _CONSOLE_COND:
+        _CONSOLE_STOP = True
+        writer = _CONSOLE_WRITER
+        _CONSOLE_COND.notify_all()
+    if writer is None or not writer.is_alive():
+        return
+    writer.join(min(timeout, 0.5))
+
+
+# 正常退出（main 返回、未捕获异常、os._exit 之外的所有路径）都必须先收写线程。
+# 注册在模块级而不是 main() 里：套件直接 import 本模块，退出的行为要和线上一致。
+atexit.register(_stop_console_writer)
 
 
 def log(msg, level=None, tag=None):
@@ -18862,6 +18946,9 @@ class Handler(BaseHTTPRequestHandler):
                 sys.stdout.flush()
             except Exception:
                 pass
+            # os._exit 跳过 atexit，写线程得在这里收：否则解释器带着 daemon
+            # 线程收尾，CPython 会以 _enter_buffered_busy 中止进程。
+            _stop_console_writer(0.5)
             os._exit(0)
         threading.Thread(target=_bye, daemon=True).start()
         return self._json(200, {"ok": True, "shutting_down": True})
@@ -23098,8 +23185,10 @@ def _serve_forever(args):
             server.server_close()
         except Exception:
             pass
-        # 退出前把控制台队列写完；读端已死时最多等 1 秒（_console_flush 内部有上限）
-        _console_flush()
+        # 退出前收掉控制台写线程：先尽力写完积压，再让线程退出，避免解释器
+        # finalize 时 daemon 线程还攥着 stderr 的缓冲锁（那会让 CPython 以
+        # _enter_buffered_busy 中止进程）。读端已死时最多各等 1 秒。
+        _stop_console_writer()
 
 if __name__ == "__main__":
     # pythonw (GUI subsystem) starts with sys.stdout/sys.stderr == None; any

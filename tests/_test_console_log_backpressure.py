@@ -306,6 +306,134 @@ else:
         shutil.rmtree(work, ignore_errors=True)
 
 
+# ------------------------------------------------- 第 3 段：退出时不许中止进程
+#
+# 后台写线程是 daemon。解释器开始 finalize 时它若还攥着 sys.stderr 那个
+# BufferedWriter 的锁，CPython 不走"优雅丢弃"，而是直接
+#     Fatal Python error: _enter_buffered_busy: could not acquire lock ...
+# 然后 SIGABRT（POSIX 退出码 -6，Windows 上是 0xC0000409 一类的非零值）。
+#
+# 这条比 #642 本身更凶：事故只打死请求，这一条打死进程，而且只在"写了几行日志就
+# 退出"的短命进程上必现（快速重启、容器一次性任务、套件自己起停子进程）。
+# 所以钉的不只是"不崩"，还有"崩之前那几行日志确实写出去了"——把写线程就地停掉
+# 也能不崩，代价是丢日志，那是拿另一个 bug 换这个 bug。
+CHILD = r"""
+import sys
+sys.path.insert(0, %(root)r)
+import wb_proxy
+lines = int(sys.argv[1])
+for i in range(lines):
+    wb_proxy.log("exit probe line %%d" %% i)
+"""
+
+
+def run_short_lived(lines):
+    """起一个写 lines 行日志就退出的子进程，返回 (退出码, stderr 全文)。"""
+    import tempfile as _tempfile
+    out = _tempfile.mktemp(prefix="wb-exit-probe-")
+    try:
+        with open(out, "w+b") as fh:
+            proc = subprocess.run(
+                [PY, "-c", CHILD % {"root": ROOT}, str(lines)],
+                cwd=ROOT, stdout=subprocess.DEVNULL, stderr=fh,
+                timeout=120, env=dict(os.environ, PYTHONPATH=ROOT))
+            fh.seek(0)
+            text = fh.read().decode("utf-8", "replace")
+        return proc.returncode, text
+    finally:
+        try:
+            os.unlink(out)
+        except OSError:
+            pass
+
+
+# 行数刻意覆盖三档：1 行（写线程可能还没起来）、5 行（刚起来就被按下退出）、
+# 300 行（队列里确实有积压）。只在某一档崩，说明是时序而不是状态，所以每档取样
+# 三次——单次通过不说明问题，三次全过才算。
+
+
+# ------------------------------------- 第 4 段：读端堵死时退出也不许中止（真事故形态）
+#
+# 第 3 段的 stderr 是个正常文件，写永远不会卡住。线上真正的形态是反过来的：终端
+# 被回收、读端不再读，日志写进缓冲后卡在那里——此时进程退出，CPython 一样会撞上
+# 那把锁并 SIGABRT。用 pty 做读端、父进程全程不读，就能把这一形态钉住：修复前
+# n=5/60/600 三档各跑两次全是 -6 且伴 Fatal Python error，修复后三档全 0。
+def blocked_console_exit(n):
+    """子进程的 stderr 接到一条没人读的 pty 上，写 n 行日志后退出。"""
+    if os.name == "nt":
+        return None
+    try:
+        import pty
+    except Exception:
+        return None
+    master_fd, slave_fd = pty.openpty()
+    try:
+        started = time.time()
+        proc = subprocess.Popen(
+            [PY, "-c", CHILD % {"root": ROOT}, str(n)],
+            cwd=ROOT, stdout=subprocess.DEVNULL, stderr=slave_fd,
+            env=dict(os.environ, PYTHONPATH=ROOT))
+        try:
+            code = proc.wait(timeout=90)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            code = "TIMEOUT"
+        elapsed = time.time() - started
+        os.set_blocking(master_fd, False)
+        data = b""
+        while True:
+            try:
+                chunk = os.read(master_fd, 65536)
+            except BlockingIOError:
+                break
+            if not chunk:
+                break
+            data += chunk
+        return code, elapsed, data.decode("utf-8", "replace")
+    finally:
+        try:
+            os.close(slave_fd)
+        except OSError:
+            pass
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+
+
+probe = blocked_console_exit(60)
+if probe is None:
+    print("  [SKIP] 读端堵死时的退出用例（Windows 无 pty）")
+else:
+    code, elapsed, text = probe
+    check("读端堵死、写 60 行日志后退出，退出码为 0（而不是被 finalize 中止）",
+          code == 0, "退出码 %r，耗时 %.1fs" % (code, elapsed))
+    check("读端堵死时退出，stderr 里没有 Fatal Python error",
+          "Fatal Python error" not in text and "_enter_buffered_busy" not in text,
+          "读到 %d 字节，尾部 %r" % (len(text), text[-300:]))
+    # 读端死了，日志丢一部分是必然的；但不能靠"卡住不退"来躲，退出要有上限。
+    check("读端堵死时退出不会无限期挂着", elapsed < 30.0, "耗时 %.1fs" % elapsed)
+
+
+for lines in (1, 5, 300):
+    codes = []
+    tails = []
+    for _ in range(3):
+        code, text = run_short_lived(lines)
+        codes.append(code)
+        tails.append(text)
+    worst = max(tails, key=len) if tails else ""
+    check("写 %d 行日志后正常退出，退出码为 0（而不是被 finalize 中止）" % lines,
+          all(c == 0 for c in codes), "三次退出码 %s" % codes)
+    check("写 %d 行日志后退出，stderr 里没有 Fatal Python error" % lines,
+          not any("Fatal Python error" in t or "_enter_buffered_busy" in t for t in tails),
+          "尾部：%r" % worst[-300:])
+    # 光"不崩"不够：收尾要是靠就地停掉写线程换来的，日志就丢了。
+    check("写 %d 行日志后退出，最后一行确实落到了 stderr" % lines,
+          ("exit probe line %d" % (lines - 1)) in tails[-1],
+          "读到 %d 字节，尾部 %r" % (len(tails[-1]), tails[-1][-200:]))
+
+
 print()
 print("SUMMARY: PASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)
