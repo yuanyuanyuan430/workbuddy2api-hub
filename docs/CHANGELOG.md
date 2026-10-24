@@ -1,3 +1,16 @@
+## v1.7.34
+
+控制台日志链路的两个致命缺陷修复版本（fork 维护线）。套件 226 个（167 Python + 59 JS）。
+
+> **维护状态**：本版由 fork 维护者接手发布，在 v1.7.33 之上补齐日志通道的稳定性问题。上游对非官方客户端的识别与拦截仍在收紧，账号风控 / 限流 / 封禁风险由使用者自行承担。
+
+- **控制台日志写满管道后不再打死整条请求链路**（#642）：`log()` 直接 `sys.stderr.write()` + `flush()`，外层 `try/except` 只吃得掉「写抛异常」（EPIPE），吃不掉「写永久阻塞」——stderr 是「读端在、但从不读」的管道时（终端被回收、`| head`、日志收集器卡死），累计约 64 KB 访问日志后写入方再也不返回。访问日志在响应头之前发出，于是除 `/logs`、`/usage`、`/health`、`/realm`、`/panel/status` 这类静默白名单端点外，所有端点连状态行都不给。现在控制台输出改走**有界队列 + 单后台写线程**：`log()` 只入队立即返回，队列上限 512 行、满则丢最旧一条并计数，读端恢复后补一行「读端跟不上，丢弃了 N 行（看板日志照常完整）」；`fileno()` 不可用的流（`io.StringIO`，测试与嵌入场景）仍走同步写，脱敏行为不变；关停时最多等 1 秒尽力刷完。新增 `tests/_test_console_log_backpressure.py`（25 项）。
+- **修复控制台写线程让进程在退出时被中止**：上一项把控制台输出挪到后台线程后，`sys.stderr` 那个 `BufferedWriter` 的锁就由写线程持有；进程退出时 CPython 进入 finalize 阶段，若写线程还攥着这把锁，解释器不走「优雅丢弃」而是直接 `Fatal Python error: _enter_buffered_busy` 并 SIGABRT（Windows 上是 `0xC0000409`）——只写 5 行日志就退出，实测 6/6 次中止。这比原来的卡死更凶：卡死只打死请求，这条直接打死进程。现在写线程在进程收尾前被显式停掉：`atexit` 注册 `_stop_console_writer()`，`/shutdown` 与 Windows 控制台关闭处理里也各补一次（`os._exit` 会跳过 `atexit`）；同时落到控制台的写改走 `os.write()`，只经内核、不参与那把锁（Windows 交互式控制台例外，仍走 `stream.write` 以保住中文编码）。另修一处退出丢日志：`_console_flush()` 原来只认「队列空」，现在把「有一行正在写」也算进去。
+- **TCP_NODELAY 断言改成平台无关**：`tests/_test_http_limits.py` 曾断言 `getsockopt(TCP_NODELAY) == 1`，而 macOS 的 xnu 在置位后回报 `4`、Linux 回报 `1`，于是非 Linux 平台上这条套件恒红。改为断言「非 0 即已置位」，保留「属性写了但没人用」的行为级约束。
+- **维护与文档**：版本号同步到 `wb_proxy.py`、OpenWrt `PKG_VERSION`、README 徽章与记录区间。
+
+验证：本地 `226 passed, 0 failed, 0 skipped`（macOS 14.7，Python 3.12.14；Linux 侧 CI 三腿绿）。端到端冒烟在真实上游执行：CN 出口 `deepseek-v4-pro` 与 `hy3` 均返回真实回复，流式整轮复用同一 chunk id。
+
 ## v1.7.33
 
 四个社区 PR 的集成版本，并自本版起进入低频维护。套件 225 个（166 Python + 59 JS）。
