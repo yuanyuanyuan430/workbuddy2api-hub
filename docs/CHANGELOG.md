@@ -1,3 +1,27 @@
+## v1.7.36
+
+更新通道改指本仓库的维护版本（fork 维护线）。套件 227 个（168 Python + 59 JS）。
+
+> 维护状态：本仓库自 v1.7.33 起进入低频维护，自 v1.7.34 起由 fork 维护线独立发版。上游对非官方
+> 客户端的识别在收紧，账号风控与封禁请自行承担；本维护线只修代码缺陷，不承诺账号可用性。
+
+- **更新通道与部署产物改指本仓库**：`wb_updates.DEFAULT_REPOSITORY` 与
+  `wb_update_portable.REPO_DEFAULT` 原本仍指 `ardeyouxipianyi/workbuddy2api-hub`，
+  `docker-compose.yml` / `quick-deploy.sh` 的默认镜像与面板页头链接同样指向上游。
+  后果是上游一旦发版，面板就会提示更新，点一次「安装」即把上游构建装回来，静默覆盖
+  v1.7.34 的日志阻塞与退出中止修复、v1.7.35 的连登降级，而 `accounts/` 与 `usage/` 不回滚。
+  现已全部改指本仓库；`WB_UPDATE_REPO` 仍可切换更新源，也是本次改动的回滚手段。
+- **新增钉住断言**：`tests/_test_update_check.py` 加 `UpdateSourceTests`（4 条，60 → 64）、
+  `tests/_test_portable_update.py` 加 `UpdateSourceTests`（3 条，26 → 27）、
+  `tests/_test_deploy_modes.py` 加 `test_deploy_defaults_pull_the_image_this_repo_builds`。
+  把默认仓库或镜像名改回上游值，这三处都会红。
+
+验证：本地 `227 passed, 0 failed, 0 skipped`（macOS，Python 3.12.14）；Python 3.9.25 腿
+`compileall` 通过且三个改动套件 64 / 27 / 7 全绿；CI 三腿（ubuntu 3.9、ubuntu 3.12、
+windows 3.12）绿。真网关冒烟：`/health` ok、面板 200、`POST /updates/check` 后
+`GET /updates` 的 `release_url` 已指向本仓库、stderr 无 Fatal。真实网络下
+`fetch_releases()` 返回本仓库的 `v1.7.35` / `v1.7.34`。
+
 ## v1.7.35
 
 国际版每日活跃的连登降级版本（fork 维护线）。套件 227 个（168 Python + 59 JS）。

@@ -22,7 +22,7 @@
 This project is for protocol research and personal use only. Prefer the official client, do not use your primary account, and do not resell or share access.
 
 <p align="center">
-  <a href="https://github.com/yuanyuanyuan430/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v1.7.35-2496ED?style=flat-square" alt="Version 1.7.35"></a>
+  <a href="https://github.com/yuanyuanyuan430/workbuddy2api-hub/releases"><img src="https://img.shields.io/badge/Release-v1.7.36-2496ED?style=flat-square" alt="Version 1.7.36"></a>
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Dual_Realm-Intl_&_CN-0DBD8B?style=flat-square" alt="Dual Realm">
@@ -493,7 +493,7 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 <!-- 发版时：把下面的 Unreleased 段落整理成新版本号（## vX.Y.Z），整体移入 docs/CHANGELOG.md 顶部 -->
 
-- **修复更新通道与部署产物仍指向上游仓库**：本维护线自己发 Release，但「检查更新」的默认仓库、便携版一键更新的兜底仓库、`docker-compose.yml` / `quick-deploy.sh` 的默认镜像、面板页头的 GitHub 链接都还指向上游。后果不是提示错误，而是**点一次「安装」就把上游构建装回来**——`#642` 的日志阻塞修复、退出时的进程中止修复、`#645` 的连登降级会一起静默消失，而 `accounts/` 与 `usage/` 不会跟着回滚。现已全部改指本仓库；`WB_UPDATE_REPO` 环境变量仍是自定义更新源的开关，也是这次改动的回滚手段。 / **Fix the update channel and deploy artifacts still pointing at the upstream repository**: this maintenance line publishes its own releases, yet the default repository for the update check, the portable updater's fallback repository, the default image in `docker-compose.yml` and `quick-deploy.sh`, and the panel header's GitHub link all still pointed upstream. The consequence is not a wrong hint: **one click on Install pulls the upstream build back in**, silently dropping the log-channel fixes from `#642`, the interpreter-shutdown abort fix, and the `#645` check-in fallback, while `accounts/` and `usage/` do not roll back with them. Everything now points at this repository; the `WB_UPDATE_REPO` environment variable remains the way to choose another source, and doubles as the rollback for this change.
+- **v1.7.36 已于 2026-10-24 发布**：本版把更新通道与部署产物从上游仓库改指本仓库 —— 在此之前，面板「一键更新」会把上游构建装回来，静默覆盖本维护线的修复。同时保留 `WB_UPDATE_REPO` 作为切换更新源与回滚的手段。完整变更与验证记录见 **[docs/CHANGELOG.md](docs/CHANGELOG.md#v1736)**；下一版的改动继续写在本段。
 
 - **v1.7.35 已于 2026-10-24 发布**：本版把国际版每日活跃在沙箱证书校验失败时降级到活跃上报（#645），并放开国际版的活跃上报能力；新开关默认关，升级后线上行为不变。完整变更与验证记录见 **[docs/CHANGELOG.md](docs/CHANGELOG.md#v1735)**；下一版的改动继续写在本段。
 
@@ -591,7 +591,7 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 - **DSH 一键配置放宽限流重试，修掉「对话到一半链接中断」**：WorkBuddy 的 429 冷却通常约一分钟，而 DSH 的默认 `retryPolicy` 是 `normal` / 最多 5 次 / 退避 500ms 起翻倍、封顶 10s——加起来不到 16 秒就放弃，冷却还没结束回合就以 `RATE_LIMIT` 失败。一键配置现在给 `wb-proxy` 单独写 `retryPolicy: {mode: normal, maxRetries: 8, backoff: {initialDelayMs: 2000, maxDelayMs: 30000, jitterRatio: 0.1}}`（合计约 2 分半），只影响 `wb-proxy`，其它 provider 仍用默认策略；字段与取值按 `@deepseek-ai/dsh-llm` 的 `RetryPolicySchema`。已经接入过的机器重新点一次「一键配置」即可补上这段（幂等），重启 DSH 生效。
   DSH's default per-provider retry policy (normal, at most 5 retries, 500ms→10s backoff, under 16 seconds in total) gives up before WorkBuddy's ~60s rate-limit cooldown ends, so the turn dies with `RATE_LIMIT` — which the user sees as the conversation breaking mid-flight. The one-click config now writes a wider `retryPolicy` for `wb-proxy` only (8 retries, 2s initial delay, 30s cap, ~2.5 minutes in total); other providers keep the default policy. Field names and bounds follow `@deepseek-ai/dsh-llm`'s `RetryPolicySchema`. Re-running the one-click config on an already-integrated machine adds it idempotently, and a DSH restart applies it.
 
-已发布版本的完整记录（v1.4.5 ~ v1.7.35，含每版的 PR 归属）见 **[docs/CHANGELOG.md](docs/CHANGELOG.md)**。
+已发布版本的完整记录（v1.4.5 ~ v1.7.36，含每版的 PR 归属）见 **[docs/CHANGELOG.md](docs/CHANGELOG.md)**。
 
 ## 七、致谢与引用声明 (Credits & References)
 
