@@ -4,7 +4,7 @@
 services:
   wb-proxy:
     # 追最新稳定版用 :latest；想固定版本可换成具体版本号（如 :v1.6.11）
-    image: ghcr.io/ardeyouxipianyi/workbuddy2api-hub:latest
+    image: ghcr.io/yuanyuanyuan430/workbuddy2api-hub:latest
     container_name: wb-proxy
     restart: unless-stopped
     # Defaults to root (0:0), i.e. the historical behaviour. To run as your own

@@ -22,7 +22,9 @@ import time
 import urllib.request
 import zipfile
 
-REPO_DEFAULT = "ardeyouxipianyi/workbuddy2api-hub"
+# 与 wb_updates.DEFAULT_REPOSITORY 保持一致：本仓库自己发 Release，
+# 便携版的一键更新也必须从本仓库取包，否则会把上游构建装回来。
+REPO_DEFAULT = "yuanyuanyuan430/workbuddy2api-hub"
 UPDATES_DIR = "updates"
 STATUS_NAME = "status.json"
 MANIFEST_NAME = "release-manifest.json"

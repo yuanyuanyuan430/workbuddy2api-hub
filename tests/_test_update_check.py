@@ -124,6 +124,36 @@ class SettingsContractTests(unittest.TestCase):
                 self.assertFalse(wb_settings.update_check_enabled(d), value)
 
 
+class UpdateSourceTests(unittest.TestCase):
+    """默认更新源必须是「发布这份代码的那个仓库」。
+
+    fork 若继续把更新源指向上游，面板会提示上游的新版本；点一次「安装」就会把
+    上游构建装回来，本维护线的修复静默消失，而 accounts / usage 不会跟着回滚。
+    因此这里把「默认来自哪个仓库」钉成契约，而不是留给注释。
+    """
+
+    def test_the_default_repository_is_the_one_that_ships_this_code(self):
+        self.assertEqual(wb_updates.DEFAULT_REPOSITORY,
+                         "yuanyuanyuan430/workbuddy2api-hub")
+
+    def test_both_endpoints_are_built_from_that_repository(self):
+        repo = wb_updates.DEFAULT_REPOSITORY
+        self.assertEqual(wb_updates.RELEASES_URL,
+                         "https://api.github.com/repos/%s/releases" % repo)
+        self.assertEqual(wb_updates.LATEST_RELEASE_URL,
+                         "https://github.com/%s/releases/latest" % repo)
+
+    def test_the_environment_still_overrides_the_source(self):
+        # 自建部署要能改源：WB_UPDATE_REPO 是这次改动的回滚开关。
+        with mock.patch.dict(os.environ, {"WB_UPDATE_REPO": "someone/elifork"}):
+            self.assertEqual(wb_updates.configured_repository(), "someone/elifork")
+
+    def test_a_malformed_override_falls_back_to_the_default(self):
+        for bad in ("no-slash", "../etc/passwd", "a/b/c", "  "):
+            with mock.patch.dict(os.environ, {"WB_UPDATE_REPO": bad}):
+                self.assertEqual(wb_updates.configured_repository(),
+                                 wb_updates.DEFAULT_REPOSITORY, bad)
+
 class VersionComparisonTests(unittest.TestCase):
     def test_plain_semver_parses_with_or_without_the_v(self):
         self.assertEqual(wb_updates.parse_version("v1.2.3"), (1, 2, 3))

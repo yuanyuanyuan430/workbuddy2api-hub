@@ -30,9 +30,11 @@ import urllib.request
 
 import wb_settings
 
-# 默认仍指向官方仓库。自建 fork 的 systemd 服务可通过 WB_UPDATE_REPO 指定
-# 自己的 Release 源；该值只允许 owner/repo 形状，避免把更新请求导向任意主机。
-DEFAULT_REPOSITORY = "ardeyouxipianyi/workbuddy2api-hub"
+# 默认指向本仓库（fork 维护线）。官方的 WB_UPDATE_REPO 环境变量仍可把
+# 更新源指向任意 owner/repo；该值只允许 owner/repo 形状，避免把更新请求
+# 导向任意主机。改这里的理由：本仓库自己发 Release，若默认仍指上游，
+# 面板的「一键更新」会把上游构建装回来，覆盖本维护线的修复。
+DEFAULT_REPOSITORY = "yuanyuanyuan430/workbuddy2api-hub"
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
 
 
