@@ -140,8 +140,14 @@ class NagleFlagTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
-        self.assertEqual(Probe.seen, [1],
-                         "TCP_NODELAY is not set on the accepted connection")
+        # 只断言「置位了」，不写死置位后的返回值：Linux 上 getsockopt 回报 1，
+        # macOS（xnu）上回报 4——同一条 setsockopt(…, 1)，两个内核各自报一个
+        # 非零标志。写死 1 会让这套件在 macOS 上恒红，而它要守的是「Nagle 真的
+        # 被关掉了」，非零即成立。
+        self.assertEqual(len(Probe.seen), 1,
+                         "the accepted connection was set up once")
+        self.assertNotEqual(Probe.seen[0], 0,
+                            "TCP_NODELAY is not set on the accepted connection")
 
 
 class BacklogTests(unittest.TestCase):
