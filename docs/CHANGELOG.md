@@ -1,3 +1,14 @@
+## v1.7.35
+
+国际版每日活跃的连登降级版本（fork 维护线）。套件 227 个（168 Python + 59 JS）。
+
+> **维护状态**：本版由 fork 维护者接手发布。上游对非官方客户端的识别与拦截仍在收紧，账号风控 / 限流 / 封禁风险由使用者自行承担。
+
+- **国际版每日活跃：沙箱证书校验失败时改走活跃上报**（#645）：上游给网页通道分配的 ACP 沙箱域名 `*.workbuddy.cloudagent-app.net` 解析到腾讯云 EdgeOne，边缘节点下发的是 `*.cdn.myqcloud.com` 通配证书，Python 的 ssl 必然报 `Hostname mismatch`，这一轮重试永远不会成功。旧实现把它当成「这一轮没跑完」按预算重试到底，最后整轮判 `ok: false`，面板上一片「集体封号」的错觉——实际积分照发，丢的只是 growth 连登。同时国际版本来就有连登体系，只是代码把它挡在门外：`report_activity()` 从「仅国内版」放开到 `cn + intl`，国际版按自己的 `chat_base_url()`（`https://www.workbuddy.ai`）上报，`fetch_streak_days()` 的 base 也改成按账号出口取（原先写死国内，国际版永远读不到天数）；网页腿失败且错误串命中证书标记时，若新开关 `daily_chat_web_fallback_activity` 打开就改走一次活跃上报，成功则把当天算完成（结果带 `web_fallback` 明细）。新增 `wb_accounts.is_tls_verify_text()` 复用同一张证书标记表——`wb_webagent.run_turn` 把异常折成「<类型>: <消息>」文本，调用方拿不到异常对象。**开关默认关，升级后线上行为不变**：证书失败仍如实报失败、仍不写 `lastDailyChat`；沙箱未就绪 / 轮次超时 / 业务拒绝一律不降级。新增 `tests/_test_daily_chat_activity_fallback.py`（12 项），改写 `tests/_test_streak_report.py` 里两条「国际版永不参与活跃上报」的断言并补两条 base 选择断言。
+- **维护与文档**：版本号同步到 `wb_proxy.py`、OpenWrt `PKG_VERSION`、README 徽章与记录区间；面板新增文案同步中文 / 繁体 / 英文三处词典。
+
+验证：本地 `227 passed, 0 failed, 0 skipped`（macOS，Python 3.12.14）+ Python 3.9.25 复跑；Linux（Python 3.12.3）同批套件全绿；CI 三腿（ubuntu 3.9 / ubuntu 3.12 / windows 3.12）全绿。真上游验证：在国际版账号上执行 `report_activity()` 后连登天数由 0 变 1（2 秒后复查），证明降级路径真实点亮连登；CN 出口 `hy3` 与 `deepseek-v4-pro` 端到端返回真实模型回复。
+
 ## v1.7.34
 
 控制台日志链路的两个致命缺陷修复版本（fork 维护线）。套件 226 个（167 Python + 59 JS）。
