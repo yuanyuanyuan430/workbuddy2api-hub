@@ -10568,18 +10568,105 @@ def add_log_entry(msg, level=None, tag=None):
         LOG_STORE.append(entry)
     return entry
 
-def log(msg, level=None, tag=None):
-    # 控制台 stderr 与看板 buffer 同源脱敏；写失败一律吞掉。
-    # 日志通道绝不能打死请求。send_response() 会先调 log_request()，所以 stderr 写
-    # 失败一旦抛出，异常发生在响应头发出之前：客户端只看到连接被掐、日志库里一条
-    # 不留，而 /health /realm /panel/status 因为在 log_message 静默白名单里照常
-    # 200，看起来"服务健在"（2026-10-19 线上网关的启动终端被回收后实测只剩这
-    # 三个端点能答，其余全部空响应）。
+# ------------------------------------------- 控制台日志：永不阻塞调用线程
+# log() 在 send_response() 之前被调用（log_request -> log_message -> log），所以
+# 写 stderr 一旦**阻塞**，代价和写失败完全不同：那一次请求的响应头永远发不出去，
+# 而 /health /realm /panel/status 因为在 log_message 静默白名单里照常 200。
+#
+# 写失败（EPIPE）早被 try/except 吃掉；写阻塞不行——管道写端在缓冲满时就是原地
+# 等读端，没有任何可抓的异常（#642：启动终端被回收成一个没人读的管道后，累计约
+# 50~100 个带访问日志的请求，除三个免日志端点外全部空响应）。
+#
+# 所以真实文件描述符的写交给后台线程：请求路径只入队，队列有界（满则丢弃并计数），
+# 后台线程怎么被卡住都只是它自己卡住。非 fd 的流（测试注入的 StringIO、被替换的
+# 包装对象）没有阻塞风险，仍同步写，语义与既有用例一致。
+_CONSOLE_QUEUE_MAX = 512
+_CONSOLE_QUEUE = deque()
+_CONSOLE_COND = threading.Condition()
+_CONSOLE_WRITER = None
+_CONSOLE_DROPPED = 0
+
+
+def _console_write_now(line):
+    """真正落到控制台的那一下：失败一律吞掉，绝不外抛。"""
     try:
-        sys.stderr.write(f"[wb-proxy] {time.strftime('%H:%M:%S')} {_mask_text(str(msg))}\n")
-        sys.stderr.flush()
+        stream = sys.stderr
+        if stream is None:
+            return
+        stream.write(line)
+        stream.flush()
     except Exception:
         pass
+
+
+def _console_drain():
+    """后台唯一的控制台写者：被读端卡住时只是它自己卡住。"""
+    global _CONSOLE_DROPPED
+    while True:
+        with _CONSOLE_COND:
+            while not _CONSOLE_QUEUE:
+                _CONSOLE_COND.wait()
+            if _CONSOLE_DROPPED:
+                lost, _CONSOLE_DROPPED = _CONSOLE_DROPPED, 0
+                _CONSOLE_QUEUE.appendleft(
+                    "[wb-proxy] console log: 读端跟不上，丢弃了 %d 行（看板日志照常完整）\n"
+                    % lost)
+            line = _CONSOLE_QUEUE.popleft()
+        _console_write_now(line)
+
+
+def _console_enqueue(line):
+    global _CONSOLE_WRITER, _CONSOLE_DROPPED
+    with _CONSOLE_COND:
+        if len(_CONSOLE_QUEUE) >= _CONSOLE_QUEUE_MAX:
+            # 丢最旧的一条而不是新来的：控制台看的是"最近发生了什么"，与看板
+            # LOG_BUFFER 的 maxlen 语义一致（都是挤掉最旧）。ring 满了以后仍能
+            # 看到最新一行，事故现场更容易读。
+            _CONSOLE_QUEUE.popleft()
+            _CONSOLE_DROPPED += 1
+        _CONSOLE_QUEUE.append(line)
+        if _CONSOLE_WRITER is None:
+            _CONSOLE_WRITER = threading.Thread(
+                target=_console_drain, name="wb-console-log", daemon=True)
+            _CONSOLE_WRITER.start()
+        _CONSOLE_COND.notify()
+
+
+def _console_stream_is_file(stream):
+    """真实文件描述符才可能阻塞；StringIO 之类永远不阻塞。"""
+    try:
+        stream.fileno()
+        return True
+    except Exception:
+        return False
+
+
+def _console_log(line):
+    """把一行交给控制台；返回前绝不等待读端。"""
+    stream = sys.stderr
+    if stream is None:
+        return
+    if not _console_stream_is_file(stream):
+        _console_write_now(line)
+        return
+    _console_enqueue(line)
+
+
+def _console_flush(timeout=1.0):
+    """退出前尽力把队列写完；控制台已死时最多等 timeout 秒。"""
+    end = time.time() + timeout
+    while time.time() < end:
+        with _CONSOLE_COND:
+            if not _CONSOLE_QUEUE:
+                return
+        time.sleep(0.05)
+
+
+def log(msg, level=None, tag=None):
+    # 控制台 stderr 与看板 buffer 同源脱敏。控制台这一路可丢：写不进去不影响请求
+    # （见 _console_log），buffer / 日志库那一路照常完整。
+    _console_log("[wb-proxy] %s %s\n" % (time.strftime("%H:%M:%S"),
+                                        _mask_text(str(msg))))
     add_log_entry(msg, level=level, tag=tag)
 
 # 本地网路工具的多引擎轮换、冷却与失败分类写进看板日志（tag=webtools）
@@ -23007,6 +23094,8 @@ def _serve_forever(args):
             server.server_close()
         except Exception:
             pass
+        # 退出前把控制台队列写完；读端已死时最多等 1 秒（_console_flush 内部有上限）
+        _console_flush()
 
 if __name__ == "__main__":
     # pythonw (GUI subsystem) starts with sys.stdout/sys.stderr == None; any
