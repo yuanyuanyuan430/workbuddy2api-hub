@@ -10604,15 +10604,19 @@ def _console_drain():
     global _CONSOLE_DROPPED
     while True:
         with _CONSOLE_COND:
-            while not _CONSOLE_QUEUE:
+            # 丢弃计数本身也是待写内容：队列排空之后如果还有没报的丢弃，要立刻补
+            # 一条说明再睡。事故末尾那一批丢行往往再没有后续日志把写者叫醒，只等
+            # “下一行到来时再报” 会让计数永远埋着不报。
+            while not _CONSOLE_QUEUE and not _CONSOLE_DROPPED:
                 _CONSOLE_COND.wait()
             if _CONSOLE_DROPPED:
                 lost, _CONSOLE_DROPPED = _CONSOLE_DROPPED, 0
                 _CONSOLE_QUEUE.appendleft(
                     "[wb-proxy] console log: 读端跟不上，丢弃了 %d 行（看板日志照常完整）\n"
                     % lost)
-            line = _CONSOLE_QUEUE.popleft()
-        _console_write_now(line)
+            line = _CONSOLE_QUEUE.popleft() if _CONSOLE_QUEUE else None
+        if line is not None:
+            _console_write_now(line)
 
 
 def _console_enqueue(line):
@@ -10657,7 +10661,7 @@ def _console_flush(timeout=1.0):
     end = time.time() + timeout
     while time.time() < end:
         with _CONSOLE_COND:
-            if not _CONSOLE_QUEUE:
+            if not _CONSOLE_QUEUE and not _CONSOLE_DROPPED:
                 return
         time.sleep(0.05)
 
